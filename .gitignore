@@ -2,7 +2,11 @@ node_modules/
 client/dist/
 server/data/
 server/uploads/
+server/backups/
 *.log
 .env.opencode/
+.env
+.env.local
+.env.*.local
 
 .opencode/

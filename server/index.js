@@ -7,6 +7,7 @@ const authRouter = require('./routes/auth.routes');
 const studentRouter = require('./routes/student.routes');
 const adminRouter = require('./routes/admin.routes');
 const { UPLOAD_DIR } = require('./middleware/upload');
+const cloud = require('./lib/cloudinary');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -14,17 +15,28 @@ const PORT = process.env.PORT || 5000;
 app.use(cors());
 app.use(express.json({ limit: '2mb' }));
 
-// الصور المرفوعة
-app.use('/uploads', express.static(UPLOAD_DIR, { maxAge: '7d' }));
+// الصور المرفوعة: إعادة توجيه إلى Cloudinary عند تفعيله، وإلا قراءة من القرص
+if (cloud.isConfigured()) {
+  app.use('/uploads', (req, res, next) => {
+    const pid = decodeURIComponent(req.path.replace(/^\/+/, ''));
+    if (!pid) return next();
+    const url = cloud.getOptimizedUrl(pid);
+    if (!url) return next();
+    res.redirect(301, url);
+  });
+  console.log('☁️  وضع الصور: Cloudinary');
+} else {
+  app.use('/uploads', express.static(UPLOAD_DIR, { maxAge: '7d' }));
+  console.log('💾 وضع الصور: الملفات المحلية (server/uploads)');
+}
 
 // ======================= Routes =======================
-app.get('/api/health', (req, res) => res.json({ ok: true, school: 'مدرسة القمم النجاح' }));
+app.get('/api/health', (req, res) => res.json({ ok: true, school: 'مدرسة القمم النجاح', db: process.env.DATABASE_URL ? 'postgres' : 'sqlite' }));
 app.use('/api/auth', authRouter);
 app.use('/api/student', studentRouter);
 app.use('/api/admin', adminRouter);
 
 // ======================= 404 + errors =======================
-// تقديم الواجهة الجاهزة في الإنتاج
 const clientDist = path.join(__dirname, '..', 'client', 'dist');
 if (require('fs').existsSync(clientDist)) {
   app.use(express.static(clientDist));
@@ -47,10 +59,16 @@ app.use((err, req, res, next) => {
   res.status(500).json({ message: 'حدث خطأ داخلي في الخادم.' });
 });
 
-app.listen(PORT, () => {
-  const students = db.prepare('SELECT COUNT(*) AS c FROM students').get().c;
-  const teachers = db.prepare('SELECT COUNT(*) AS c FROM teachers').get().c;
-  console.log(`✅ مدرسة القمم النجاح - الخادم يعمل على http://localhost:${PORT}`);
-  console.log(`   التلاميذ: ${students} | الأساتذة: ${teachers}`);
-  console.log(`   حساب الإدارة: username=admin  password=admin123`);
+async function start() {
+  await db.init();
+  app.listen(PORT, () => {
+    const isPg = !!process.env.DATABASE_URL;
+    console.log(`✅ مدرسة القمم النجاح - الخادم يعمل على http://localhost:${PORT} [${isPg ? 'PostgreSQL' : 'SQLite'}]`);
+    console.log(`   حساب الإدارة: username=admin  password=admin123`);
+  });
+}
+
+start().catch(err => {
+  console.error('[FATAL] تعذر تشغيل الخادم:', err);
+  process.exit(1);
 });

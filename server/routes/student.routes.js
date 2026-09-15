@@ -6,21 +6,20 @@ const router = express.Router();
 router.use(authenticate, requireRole('ROLE_STUDENT'));
 
 // ============ الإعلانات النشطة للتلميذ ============
-router.get('/announcements', (req, res) => {
-  // باستثناء المواضيع غير النشطة
-  const rows = db.prepare(`
+router.get('/announcements', async (req, res) => {
+  const rows = (await db.prepare(`
     SELECT id, message, images, status, created_at, updated_at
     FROM announcements
     WHERE status = 1
     ORDER BY created_at DESC, id DESC
     LIMIT 5
-  `).all().map(a => ({ ...a, images: JSON.parse(a.images || '[]') }));
+  `).all()).map(a => ({ ...a, images: JSON.parse(a.images || '[]') }));
   res.json({ announcements: rows });
 });
 
 // ============ بيانات التلميذ الحالي ============
-router.get('/me', (req, res) => {
-  const student = db.prepare(`
+router.get('/me', async (req, res) => {
+  const student = await db.prepare(`
     SELECT s.id, s.first_name, s.last_name, s.reg_number, s.phone, s.status,
            l.id AS level_id, l.name AS level_name,
            c.id AS class_id, c.name AS class_name,
@@ -36,7 +35,7 @@ router.get('/me', (req, res) => {
     return res.status(403).json({ message: 'حسابك غير مفعل، يرجى التواصل مع الإدارة.' });
   }
 
-  const selections = db.prepare(`
+  const selections = await db.prepare(`
     SELECT sg.id, g.name AS group_name, g.day, g.start_time, g.end_time, g.capacity,
            g.id AS group_id, sg.status,
            t.id AS teacher_id, t.first_name AS tfirst, t.last_name AS tlast,
@@ -49,7 +48,7 @@ router.get('/me', (req, res) => {
     ORDER BY t.last_name, t.first_name
   `).all(req.user.studentId);
 
-  const payments = db.prepare(`
+  const payments = await db.prepare(`
     SELECT month_index, payment_date, is_paid FROM payments WHERE student_id = ?
   `).all(req.user.studentId);
 
@@ -57,12 +56,10 @@ router.get('/me', (req, res) => {
 });
 
 // ============ قائمة الأساتذة حسب مستوى وشعبة التلميذ ============
-router.get('/teachers', (req, res) => {
-  const student = db.prepare('SELECT * FROM students WHERE id = ?').get(req.user.studentId);
+router.get('/teachers', async (req, res) => {
+  const student = await db.prepare('SELECT * FROM students WHERE id = ?').get(req.user.studentId);
   if (!student || student.status !== 1) return res.status(403).json({ message: 'حسابك غير مفعل.' });
 
-  // التلميذ الذي ليس له شعبة (class_id فارغة) يرى أساتذة مستواه فقط؛
-  // أما التلميذ ذو الشعبة فلابد من مطابقة مستوى وشعبة الأستاذ معاً.
   const classJoin = student.class_id
     ? 'JOIN teacher_classes tc ON tc.teacher_id = t.id AND tc.class_id = ?'
     : '';
@@ -70,7 +67,7 @@ router.get('/teachers', (req, res) => {
     ? [req.user.studentId, student.level_id, student.class_id]
     : [req.user.studentId, student.level_id];
 
-  const rows = db.prepare(`
+  const rows = await db.prepare(`
     SELECT DISTINCT t.id, t.first_name, t.last_name, t.photo, t.subject_id,
            sub.name AS subject_name,
            (SELECT COUNT(*) FROM student_group_selections sg WHERE sg.student_id = ? AND sg.teacher_id = t.id) AS already_selected,
@@ -87,12 +84,12 @@ router.get('/teachers', (req, res) => {
 });
 
 // ============ تفاصيل الأستاذ + الأفواج المتاحة للتلميذ ============
-router.get('/teachers/:id', (req, res) => {
-  const student = db.prepare('SELECT * FROM students WHERE id = ?').get(req.user.studentId);
+router.get('/teachers/:id', async (req, res) => {
+  const student = await db.prepare('SELECT * FROM students WHERE id = ?').get(req.user.studentId);
   if (!student || student.status !== 1) return res.status(403).json({ message: 'حسابك غير مفعل.' });
 
   const teacherId = Number(req.params.id);
-  const teacher = db.prepare(`
+  const teacher = await db.prepare(`
     SELECT t.*, sub.name AS subject_name
     FROM teachers t JOIN subjects sub ON sub.id = t.subject_id
     WHERE t.id = ?
@@ -100,26 +97,25 @@ router.get('/teachers/:id', (req, res) => {
 
   if (!teacher) return res.status(404).json({ message: 'الأستاذ غير موجود.' });
 
-  const teachesLevel = db.prepare('SELECT 1 FROM teacher_levels WHERE teacher_id = ? AND level_id = ?').get(teacherId, student.level_id);
+  const teachesLevel = await db.prepare('SELECT 1 FROM teacher_levels WHERE teacher_id = ? AND level_id = ?').get(teacherId, student.level_id);
   if (!teachesLevel) {
     return res.status(403).json({ message: 'هذا الأستاذ لا يدرّس مستواك.' });
   }
-  // التلميذ بدون شعبة يتجاوز شرط مطابقة الشعبة
   if (student.class_id) {
-    const teachesClass = db.prepare('SELECT 1 FROM teacher_classes WHERE teacher_id = ? AND class_id = ?').get(teacherId, student.class_id);
+    const teachesClass = await db.prepare('SELECT 1 FROM teacher_classes WHERE teacher_id = ? AND class_id = ?').get(teacherId, student.class_id);
     if (!teachesClass) {
       return res.status(403).json({ message: 'هذا الأستاذ لا يدرّس شعبتك.' });
     }
   }
 
-  const mySelection = db.prepare(`
+  const mySelection = await db.prepare(`
     SELECT sg.id, sg.group_id, g.name AS group_name, g.day, g.start_time, g.end_time, sg.status
     FROM student_group_selections sg
     JOIN groups g ON g.id = sg.group_id
     WHERE sg.student_id = ? AND sg.teacher_id = ?
   `).get(req.user.studentId, teacherId);
 
-  const groups = db.prepare(`
+  const groups = await db.prepare(`
     SELECT g.id, g.name, g.day, g.start_time, g.end_time, g.capacity, g.status,
            (SELECT COUNT(*) FROM student_group_selections sg WHERE sg.group_id = g.id) AS occupied,
            sub.name AS subject_name
@@ -129,7 +125,7 @@ router.get('/teachers/:id', (req, res) => {
     ORDER BY g.day, g.start_time, g.name
   `).all(teacherId, student.level_id, student.class_id);
 
-  const teachersCount = db.prepare(`
+  const teachersCount = await db.prepare(`
     SELECT COUNT(*) AS c FROM student_group_selections
     WHERE student_id = ? AND group_id IN (SELECT id FROM groups WHERE teacher_id = ?)
   `).get(req.user.studentId, teacherId);
@@ -149,16 +145,16 @@ router.get('/teachers/:id', (req, res) => {
 // ============ اختيار فوج (مع جميع القيود داخل معاملة) ============
 const MONTHS = ['سبتمبر', 'أكتوبر', 'نوفمبر', 'ديسمبر', 'جانفي', 'فيفري', 'مارس', 'أفريل', 'ماي'];
 
-router.post('/groups/:id/select', (req, res) => {
+router.post('/groups/:id/select', async (req, res) => {
   const studentId = req.user.studentId;
   const groupId = Number(req.params.id);
 
-  const selectGroup = db.transaction(() => {
-    const student = db.prepare('SELECT * FROM students WHERE id = ?').get(studentId);
+  const selectGroup = db.transaction(async () => {
+    const student = await db.prepare('SELECT * FROM students WHERE id = ?').get(studentId);
     if (!student) throw { status: 404, message: 'التلميذ غير موجود.' };
     if (student.status !== 1) throw { status: 403, message: 'حسابك غير مفعل، يرجى التواصل مع الإدارة.' };
 
-    const group = db.prepare(`
+    const group = await db.prepare(`
       SELECT g.*, t.first_name AS tfirst, t.last_name AS tlast
       FROM groups g JOIN teachers t ON t.id = g.teacher_id
       WHERE g.id = ?
@@ -166,32 +162,27 @@ router.post('/groups/:id/select', (req, res) => {
     if (!group) throw { status: 404, message: 'الفوج غير موجود.' };
     if (group.status !== 1) throw { status: 400, message: 'هذا الفوج مغلق حالياً.' };
 
-    // الفوج يجب أن يطابق مستوى وشعبة التلميذ
     if (group.level_id !== student.level_id || (group.class_id && group.class_id !== student.class_id)) {
       throw { status: 403, message: 'هذا الفوج غير متاح لمستواك أو شعبتك.' };
     }
 
-    // الأستاذ يجب أن يدرّس مستوى التلميذ (وشعبته إن وُجدت)
-    const lvl = db.prepare('SELECT 1 FROM teacher_levels WHERE teacher_id = ? AND level_id = ?').get(group.teacher_id, student.level_id);
+    const lvl = await db.prepare('SELECT 1 FROM teacher_levels WHERE teacher_id = ? AND level_id = ?').get(group.teacher_id, student.level_id);
     if (!lvl) throw { status: 403, message: 'هذا الأستاذ لا يدرّس مستواك.' };
     if (student.class_id) {
-      const cls = db.prepare('SELECT 1 FROM teacher_classes WHERE teacher_id = ? AND class_id = ?').get(group.teacher_id, student.class_id);
+      const cls = await db.prepare('SELECT 1 FROM teacher_classes WHERE teacher_id = ? AND class_id = ?').get(group.teacher_id, student.class_id);
       if (!cls) throw { status: 403, message: 'هذا الأستاذ لا يدرّس شعبتك.' };
     }
 
-    // منع اختيار أكثر من فوج لنفس الأستاذ (يقوّيه قيد UNIQUE في قاعدة البيانات)
-    const existing = db.prepare('SELECT id FROM student_group_selections WHERE student_id = ? AND teacher_id = ?').get(studentId, group.teacher_id);
+    const existing = await db.prepare('SELECT id FROM student_group_selections WHERE student_id = ? AND teacher_id = ?').get(studentId, group.teacher_id);
     if (existing) throw { status: 400, message: 'لقد قمت باختيار فوج لهذا الأستاذ مسبقاً.' };
 
-    // التحقق من السعة داخل المعاملة (يمنع تجاوز آخر مقعد عند التزامن)
-    const occ = db.prepare('SELECT COUNT(*) AS c FROM student_group_selections WHERE group_id = ?').get(groupId).c;
-    if (occ >= group.capacity) throw { status: 409, message: 'هذا الفوج مكتمل.' };
+    const occ = await db.prepare('SELECT COUNT(*) AS c FROM student_group_selections WHERE group_id = ?').get(groupId);
+    if (occ.c >= group.capacity) throw { status: 409, message: 'هذا الفوج مكتمل.' };
 
-    // إنشاء سجلات الدفع للأشهر تلقائياً عند أول اختيار
     const insPay = db.prepare('INSERT OR IGNORE INTO payments (student_id, month_index, is_paid) VALUES (?, ?, 0)');
-    MONTHS.forEach((_, i) => insPay.run(studentId, i));
+    for (let i = 0; i < MONTHS.length; i++) await insPay.run(studentId, i);
 
-    const result = db.prepare(`
+    const result = await db.prepare(`
       INSERT INTO student_group_selections (student_id, group_id, teacher_id, status)
       VALUES (?, ?, ?, 'confirmed')
     `).run(studentId, groupId, group.teacher_id);
@@ -200,9 +191,8 @@ router.post('/groups/:id/select', (req, res) => {
   });
 
   try {
-    const { id, group } = selectGroup();
-    // تسجيل الجدول تلقائياً (مشتق من الفوج)
-    db.prepare(`
+    const { id, group } = await selectGroup();
+    await db.prepare(`
       INSERT INTO schedules (group_id, day, start_time, end_time)
       VALUES (?, ?, ?, ?)
       ON CONFLICT(group_id) DO UPDATE SET day=excluded.day, start_time=excluded.start_time, end_time=excluded.end_time
@@ -218,8 +208,8 @@ router.post('/groups/:id/select', (req, res) => {
 });
 
 // ============ حسابي ============
-router.get('/account', (req, res) => {
-  const student = db.prepare(`
+router.get('/account', async (req, res) => {
+  const student = await db.prepare(`
     SELECT s.id, s.first_name, s.last_name, s.reg_number, s.phone,
            l.name AS level_name, c.name AS class_name, ay.name AS academic_year_name
     FROM students s
@@ -229,7 +219,7 @@ router.get('/account', (req, res) => {
     WHERE s.id = ?
   `).get(req.user.studentId);
 
-  const selections = db.prepare(`
+  const selections = await db.prepare(`
     SELECT t.first_name AS tfirst, t.last_name AS tlast, sub.name AS subject_name,
            g.name AS group_name, g.day, g.start_time, g.end_time, sg.status
     FROM student_group_selections sg
@@ -240,7 +230,7 @@ router.get('/account', (req, res) => {
     ORDER BY t.last_name, t.first_name
   `).all(req.user.studentId);
 
-  const payments = db.prepare(`
+  const payments = await db.prepare(`
     SELECT month_index, payment_date, is_paid FROM payments WHERE student_id = ? ORDER BY month_index
   `).all(req.user.studentId);
 
@@ -248,8 +238,8 @@ router.get('/account', (req, res) => {
 });
 
 // ============ الجدول الدراسي للتلميذ (الأفواج المختارة فقط) ============
-router.get('/schedule', (req, res) => {
-  const schedule = db.prepare(`
+router.get('/schedule', async (req, res) => {
+  const schedule = await db.prepare(`
     SELECT t.first_name AS tfirst, t.last_name AS tlast, sub.name AS subject_name,
            g.name AS group_name, g.day, g.start_time, g.end_time
     FROM student_group_selections sg
@@ -266,12 +256,12 @@ router.get('/schedule', (req, res) => {
 });
 
 // ============ تلاميذ فوج معين (عرض فقط للتلميذ المسجل) ============
-router.get('/groups/:id/members', (req, res) => {
-  const student = db.prepare('SELECT * FROM students WHERE id = ?').get(req.user.studentId);
+router.get('/groups/:id/members', async (req, res) => {
+  const student = await db.prepare('SELECT * FROM students WHERE id = ?').get(req.user.studentId);
   if (!student || student.status !== 1) return res.status(403).json({ message: 'حسابك غير مفعل.' });
 
   const gid = Number(req.params.id);
-  const group = db.prepare(`
+  const group = await db.prepare(`
     SELECT g.*, t.first_name AS tfirst, t.last_name AS tlast, sub.name AS subject_name
     FROM groups g
     JOIN teachers t ON t.id = g.teacher_id
@@ -280,7 +270,7 @@ router.get('/groups/:id/members', (req, res) => {
   `).get(gid, student.level_id, student.class_id);
   if (!group) return res.status(404).json({ message: 'الفوج غير موجود.' });
 
-  const students = db.prepare(`
+  const students = await db.prepare(`
     SELECT s.first_name, s.last_name, s.reg_number
     FROM student_group_selections sg
     JOIN students s ON s.id = sg.student_id

@@ -10,7 +10,7 @@ function normalizeName(s) {
 }
 
 // تسجيل دخول التلميذ: الاسم + اللقب + رقم التسجيل
-function loginStudent(req, res) {
+async function loginStudent(req, res) {
   const first = normalizeName(req.body.firstName || req.body.first_name);
   const last = normalizeName(req.body.lastName || req.body.last_name);
   const reg = normalizeName(req.body.regNumber || req.body.reg_number);
@@ -19,7 +19,7 @@ function loginStudent(req, res) {
     return res.status(400).json({ message: 'يرجى ملء جميع الحقول.' });
   }
 
-  const student = db.prepare(`
+  const student = await db.prepare(`
     SELECT s.*, u.username, u.password_hash, u.role, u.active AS user_active
     FROM students s
     JOIN users u ON u.id = s.user_id
@@ -62,7 +62,7 @@ function loginStudent(req, res) {
 }
 
 // تسجيل دخول الإدارة: اسم المستخدم + كلمة المرور
-function loginAdmin(req, res) {
+async function loginAdmin(req, res) {
   const username = normalizeName(req.body.username || req.body.userName);
   const password = String(req.body.password || '');
 
@@ -70,7 +70,7 @@ function loginAdmin(req, res) {
     return res.status(400).json({ message: 'يرجى إدخال اسم المستخدم وكلمة المرور.' });
   }
 
-  const user = db.prepare('SELECT * FROM users WHERE username = ? AND role = ?').get(username, 'ROLE_ADMIN');
+  const user = await db.prepare('SELECT * FROM users WHERE username = ? AND role = ?').get(username, 'ROLE_ADMIN');
 
   if (!user || !bcrypt.compareSync(password, user.password_hash)) {
     return res.status(401).json({ message: 'بيانات الدخول غير صحيحة.' });
