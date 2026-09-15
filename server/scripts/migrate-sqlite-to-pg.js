@@ -280,8 +280,13 @@ async function main() {
 
   sqlite.close();
 
-  // 7. تحديث التسلسلات
+  // 7. تحديث التسلسلات (للجداول التي لديها عمود id فعلياً فقط)
+  const idTables = new Set(
+    (await client.query(`SELECT DISTINCT table_name FROM information_schema.columns WHERE table_schema='public' AND column_name='id'`))
+      .rows.map(r => r.table_name)
+  );
   for (const tbl of MIGRATION_ORDER) {
+    if (!idTables.has(tbl)) continue;
     try {
       const seq = (await client.query(`SELECT pg_get_serial_sequence($1, 'id') AS seq`, [tbl])).rows[0].seq;
       if (seq) await client.query(`SELECT setval($1, (SELECT COALESCE(MAX(id),1) FROM ${tbl}))`, [seq]);

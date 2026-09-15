@@ -119,8 +119,18 @@ async function seed() {
   if (cy === 0) await client.query("INSERT INTO academic_years (name, is_active) VALUES ('2026/2027',1)");
 }
 
+async function getTablesWithIdColumn() {
+  const r = await client.query(`
+    SELECT DISTINCT table_name FROM information_schema.columns
+    WHERE table_schema = 'public' AND column_name = 'id'
+  `);
+  return new Set(r.rows.map(row => row.table_name));
+}
+
 async function setSequences() {
+  const withId = await getTablesWithIdColumn();
   for (const tbl of ['users','academic_years','levels','classes','subjects','students','teachers','teacher_levels','teacher_classes','groups','student_group_selections','payments','schedules','announcements']) {
+    if (!withId.has(tbl)) continue;
     const seq = (await client.query(`SELECT pg_get_serial_sequence($1, 'id') AS seq`, [tbl])).rows[0].seq;
     if (seq) await client.query(`SELECT setval($1, (SELECT COALESCE(MAX(id),1) FROM ${tbl}))`, [seq]);
   }
