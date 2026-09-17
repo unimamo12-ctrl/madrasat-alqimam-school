@@ -32,10 +32,11 @@ export default function AdminPayments() {
   }
 
   async function recordPayment() {
-    if (record.month_index === '' || !record.payment_date) { toast.error('حدد الشهر وتاريخ الدفع.'); return; }
+    if (record.month_index === '' || !record.amount) { toast.error('حدد الشهر وكم دفع التلميذ.'); return; }
+    if (Number(record.amount) <= 0 || isNaN(Number(record.amount))) { toast.error('كم دفع التلميذ يجب أن يكون مبلغاً أكبر من 0.'); return; }
     setBusy(true);
     try {
-      await apiPost(`/admin/payments/student/${detail.student.id}`, { month_index: Number(record.month_index), payment_date: record.payment_date });
+      await apiPost(`/admin/payments/student/${detail.student.id}`, { month_index: Number(record.month_index), amount: Number(record.amount) });
       toast.success('تم تسجيل الدفع بنجاح.');
       setRecord(null);
       openDetail({ student_id: detail.student.id });
@@ -51,13 +52,15 @@ export default function AdminPayments() {
     } catch (e) { toast.error(e.message); } finally { setBusy(false); }
   }
 
-  async function editDate(p, date) {
+  async function editAmount(p, amount) {
     try {
-      await apiPut(`/admin/payments/${p.payment_id}`, { payment_date: date, is_paid: 1 });
-      toast.success('تم تعديل تاريخ الدفع.');
+      await apiPut(`/admin/payments/${p.payment_id}`, { amount: Number(amount), is_paid: 1 });
+      toast.success('تم تعديل كم دفع التلميذ.');
       openDetail({ student_id: detail.student.id });
     } catch (e) { toast.error(e.message); }
   }
+
+  const showAmount = a => (a === null || a === undefined || a === '' ? '—' : `${a} دج`);
 
   return (
     <div>
@@ -126,7 +129,7 @@ export default function AdminPayments() {
             </div>
 
             <div className="filterbar">
-              <button className="btn btn-primary btn-sm" onClick={() => setRecord({ month_index: '', payment_date: new Date().toLocaleDateString('en-GB') })}>
+              <button className="btn btn-primary btn-sm" onClick={() => setRecord({ month_index: '', amount: '' })}>
                 + تسجيل دفع
               </button>
             </div>
@@ -134,23 +137,23 @@ export default function AdminPayments() {
             <div className="table-wrap">
               <table>
                 <thead>
-                  <tr><th>الشهر</th><th>تاريخ الدفع</th><th>الحالة</th><th>إجراء</th></tr>
+                  <tr><th>الشهر</th><th>كم دفع التلميذ</th><th>الحالة</th><th>إجراء</th></tr>
                 </thead>
                 <tbody>
                   {detail.payments.map(p => (
                     <tr key={p.month_index}>
                       <td style={{ fontWeight: 800 }}>{p.month}</td>
-                      <td className="mono">{p.payment_date || '—'}</td>
+                      <td className="mono" dir="ltr">{p.is_paid ? showAmount(p.amount) : '—'}</td>
                       <td>{p.is_paid ? <Badge kind="green">تم الدفع</Badge> : <Badge kind="red">لم يتم الدفع</Badge>}</td>
                       <td>
                         <div className="table-actions">
                           {p.is_paid ? (
                             <>
-                              <button className="btn btn-ghost btn-sm" onClick={() => { const d = prompt('تعديل تاريخ الدفع (مثال: 15/09/2026):', p.payment_date); if (d && d.trim()) editDate(p, d.trim()); }}>تعديل</button>
+                              <button className="btn btn-ghost btn-sm" onClick={() => { const d = prompt('تعديل كم دفع التلميذ:', p.amount); if (d && d.trim()) editAmount(p, d.trim()); }}>تعديل</button>
                               <button className="btn btn-danger btn-sm" onClick={() => cancelPayment(p)}>إلغاء الدفع</button>
                             </>
                           ) : (
-                            <button className="btn btn-accent btn-sm" onClick={() => setRecord({ month_index: p.month_index, payment_date: new Date().toLocaleDateString('en-GB') })}>تسجيل الدفع</button>
+                            <button className="btn btn-accent btn-sm" onClick={() => setRecord({ month_index: p.month_index, amount: '' })}>تسجيل الدفع</button>
                           )}
                         </div>
                       </td>
@@ -179,8 +182,8 @@ export default function AdminPayments() {
             </select>
           </div>
           <div className="field">
-            <label>تاريخ الدفع</label>
-            <input className="input mono" dir="ltr" value={record?.payment_date} onChange={e => setRecord({ ...record, payment_date: e.target.value })} placeholder="15/09/2026" />
+            <label>كم دفع التلميذ (دج)</label>
+            <input className="input mono" dir="ltr" type="number" min="1" step="0.01" value={record?.amount ?? ''} onChange={e => setRecord({ ...record, amount: e.target.value })} placeholder="مثال: 3000" />
           </div>
         </div>
       </Modal>

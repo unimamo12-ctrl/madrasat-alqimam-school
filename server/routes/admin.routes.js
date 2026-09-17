@@ -297,6 +297,61 @@ router.delete('/teachers/:id', async (req, res) => {
   res.json({ message: 'تم حذف الأستاذ.' });
 });
 
+// ======================= تقرير: اختيارات التلاميذ للأساتذة =======================
+// تقرير إداري للقراءة فقط: يعرض جميع الأساتذة مع قائمة التلاميذ الذين اختاروهم.
+// المسار: التلميذ → اختياره الحالي → الفوج الذي اختاره → الأستاذ المرتبط بالفوج.
+// لا يُرجع أي بيانات عن الأفواج/المجموعات، ويحترم السنة الدراسية النشطة.
+router.get('/teacher-choices', async (req, res) => {
+  const year = await db.prepare('SELECT id, name FROM academic_years WHERE is_active = 1 ORDER BY id LIMIT 1').get();
+  const q = String(req.query.q || '').trim();
+
+  let teachersSql = `
+    SELECT t.id, t.first_name, t.last_name, t.photo, t.subject_id, sub.name AS subject_name
+    FROM teachers t JOIN subjects sub ON sub.id = t.subject_id
+    WHERE 1=1`;
+  const tParams = [];
+  if (q) {
+    teachersSql += ' AND (t.first_name LIKE ? OR t.last_name LIKE ?)';
+    const like = `%${q}%`;
+    tParams.push(like, like);
+  }
+  teachersSql += ' ORDER BY t.last_name, t.first_name';
+  const teachers = await db.prepare(teachersSql).all(...tParams);
+
+  let selSql = `
+    SELECT g.teacher_id AS teacher_id, s.id AS student_id, s.first_name, s.last_name, s.reg_number
+    FROM student_group_selections sg
+    JOIN groups g ON g.id = sg.group_id
+    JOIN students s ON s.id = sg.student_id
+    WHERE s.status = 1`;
+  const sParams = [];
+  if (year) { selSql += ' AND s.academic_year_id = ?'; sParams.push(year.id); }
+  selSql += ' GROUP BY g.teacher_id, s.id ORDER BY g.teacher_id, s.last_name, s.first_name';
+  const selRows = await db.prepare(selSql).all(...sParams);
+
+  const studentsByTeacher = new Map();
+  for (const row of selRows) {
+    if (!studentsByTeacher.has(row.teacher_id)) studentsByTeacher.set(row.teacher_id, []);
+    studentsByTeacher.get(row.teacher_id).push({ id: row.student_id, first_name: row.first_name, last_name: row.last_name, reg_number: row.reg_number });
+  }
+
+  res.json({
+    year: year ? { id: year.id, name: year.name } : null,
+    teachers: teachers.map(t => {
+      const students = studentsByTeacher.get(t.id) || [];
+      return {
+        id: t.id,
+        first_name: t.first_name,
+        last_name: t.last_name,
+        photo: t.photo,
+        subject_name: t.subject_name,
+        students,
+        total: students.length
+      };
+    })
+  });
+});
+
 // ======================= المواد / المستويات / الشعب =======================
 router.get('/subjects', async (req, res) => res.json({ subjects: await db.prepare('SELECT * FROM subjects ORDER BY name').all() }));
 router.post('/subjects', async (req, res) => {
@@ -595,37 +650,47 @@ router.get('/payments/student/:id', async (req, res) => {
   const payments = await db.prepare('SELECT * FROM payments WHERE student_id=? ORDER BY month_index').all(sid);
   const rows = MONTHS.map((m, i) => {
     const p = payments.find(x => Number(x.month_index) === i);
-    return { month: m, month_index: i, payment_date: p ? p.payment_date : null, is_paid: p ? p.is_paid : 0, payment_id: p ? p.id : null };
+    const amount = p && p.note && !isNaN(Number(p.note)) && Number(p.note) > 0 ? Number(p.note) : null;
+    return { month: m, month_index: i, payment_date: p ? p.payment_date : null, amount, is_paid: p ? p.is_paid : 0, payment_id: p ? p.id : null };
   });
   res.json({ student, payments: rows });
 });
 
-// تسجيل/تعديل دفعة لشهر معين
+// تسجيل/تعديل دفعة لشهر معين (تاريخ الدفع مدخل يدوياً في الأصل، الآن يُسجَّل «كم دفع التلميذ» لكل شهر في حقل note الموجود)
 router.post('/payments/student/:id', async (req, res) => {
   const sid = Number(req.params.id);
-  const { month_index, payment_date } = req.body;
-  const mi = Number(month_index);
-  if (isNaN(mi) || mi < 0 || mi > 8) return res.status(400).json({ message: 'الشهر غير صحيح.' });
-  if (!payment_date) return res.status(400).json({ message: 'تاريخ الدفع مطلوب.' });
+  const { month_index, amount } = req.body;
+  const rawMi = String(month_index ?? '').trim();
+  const mi = Number(rawMi);
+  if (rawMi === '' || isNaN(mi) || !Number.isInteger(mi) || mi < 0 || mi > 8) return res.status(400).json({ message: 'الشهر غير صحيح.' });
+  if (amount === undefined || amount === null || amount === '' || isNaN(Number(amount)) || Number(amount) <= 0) {
+    return res.status(400).json({ message: 'كم دفع التلميذ مطلوب (مبلغ صحيح أكبر من 0).' });
+  }
+  const amt = Math.round(Number(amount) * 100) / 100;
   const student = await db.prepare('SELECT id FROM students WHERE id=?').get(sid);
   if (!student) return res.status(404).json({ message: 'التلميذ غير موجود.' });
   await db.prepare(`
-    INSERT INTO payments (student_id, month_index, payment_date, is_paid, created_by, updated_at)
+    INSERT INTO payments (student_id, month_index, note, is_paid, created_by, updated_at)
     VALUES (?,?,?,1,?,datetime('now'))
     ON CONFLICT(student_id, month_index) DO UPDATE SET
-      payment_date=excluded.payment_date, is_paid=1, updated_at=datetime('now')
-  `).run(sid, mi, payment_date, req.user.id);
+      note=excluded.note, is_paid=1, updated_at=datetime('now')
+  `).run(sid, mi, String(amt), req.user.id);
   res.json({ message: 'تم تسجيل الدفع بنجاح.' });
 });
 
 // تعديل دفعة موجودة
 router.put('/payments/:id', async (req, res) => {
   const id = Number(req.params.id);
-  const { payment_date, is_paid } = req.body;
+  const { amount, is_paid } = req.body;
   const p = await db.prepare('SELECT * FROM payments WHERE id=?').get(id);
   if (!p) return res.status(404).json({ message: 'الدفعة غير موجودة.' });
-  await db.prepare(`UPDATE payments SET payment_date=?, is_paid=?, updated_at=datetime('now') WHERE id=?`)
-    .run(payment_date || null, is_paid ? 1 : 0, id);
+  let note = p.note || null;
+  if (amount !== undefined && amount !== null && amount !== '') {
+    if (isNaN(Number(amount)) || Number(amount) <= 0) return res.status(400).json({ message: 'كم دفع التلميذ يجب أن يكون مبلغاً صحيحاً أكبر من 0.' });
+    note = String(Math.round(Number(amount) * 100) / 100);
+  }
+  await db.prepare(`UPDATE payments SET note=?, is_paid=?, updated_at=datetime('now') WHERE id=?`)
+    .run(note, is_paid ? 1 : 0, id);
   res.json({ message: is_paid ? 'تم تحديث الدفعة.' : 'تم إلغاء الدفعة.' });
 });
 
@@ -634,7 +699,7 @@ router.delete('/payments/:id', async (req, res) => {
   const id = Number(req.params.id);
   const p = await db.prepare('SELECT * FROM payments WHERE id=?').get(id);
   if (!p) return res.status(404).json({ message: 'الدفعة غير موجودة.' });
-  await db.prepare('UPDATE payments SET is_paid=0, payment_date=NULL WHERE id=?').run(id);
+  await db.prepare('UPDATE payments SET is_paid=0, note=NULL WHERE id=?').run(id);
   res.json({ message: 'تم إلغاء الدفع.' });
 });
 

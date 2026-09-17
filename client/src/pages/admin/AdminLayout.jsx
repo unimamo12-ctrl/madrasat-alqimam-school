@@ -9,6 +9,7 @@ const NAV = [
   { to: '/admin/subjects', label: 'المواد', icon: '📚' },
   { to: '/admin/levels', label: 'المستويات والشعب', icon: '🏫' },
   { to: '/admin/selections', label: 'اختيارات التلاميذ', icon: '✅' },
+  { to: '/admin/teacher-choices', label: 'اختيارات التلاميذ للأساتذة', icon: '🗂️' },
   { to: '/admin/payments', label: 'الدفع', icon: '💳' },
   { to: '/admin/announcements', label: 'الإعلان', icon: '📣' },
   { to: '/admin/settings', label: 'الإعدادات', icon: '⚙️' }
