@@ -11,6 +11,8 @@ const NAV = [
   { to: '/admin/selections', label: 'اختيارات التلاميذ', icon: '✅' },
   { to: '/admin/teacher-choices', label: 'اختيارات التلاميذ للأساتذة', icon: '🗂️' },
   { to: '/admin/payments', label: 'الدفع', icon: '💳' },
+  { to: '/admin/unpaid', label: 'الذين لم يدفعوا', icon: '⛔' },
+  { to: '/admin/payment-history', label: 'سجل الدفعات', icon: '🧾' },
   { to: '/admin/announcements', label: 'الإعلان', icon: '📣' },
   { to: '/admin/settings', label: 'الإعدادات', icon: '⚙️' }
 ];

@@ -1,9 +1,32 @@
 const express = require('express');
 const db = require('../db/database');
 const { authenticate, requireRole } = require('../middleware/auth');
+const cycles = require('../services/paymentCycle.service');
 
 const router = express.Router();
 router.use(authenticate, requireRole('ROLE_STUDENT'));
+
+// سجل دفعات التلميذ حسب الدورات (نفس أسماء الحقول القديمة حتى تبقى الواجهة كما هي)
+async function studentCyclePayments(studentId) {
+  const cycle = await cycles.getOrCreateCurrentCycle();
+  const history = cycle ? await cycles.getStudentPaymentHistory(studentId) : null;
+  const rows = (history ? history.cycles : [])
+    .filter(c => !c.is_future)
+    .sort((a, b) => a.start_date.localeCompare(b.start_date))
+    .map(c => ({
+      month: c.label,
+      month_index: c.cycle_index,
+      cycle_id: c.cycle_id,
+      start_date: c.start_date,
+      end_date: c.end_date,
+      status: c.status,
+      is_paid: c.status === 'PAID' ? 1 : 0,
+      payment_date: c.paid_at,
+      amount: c.amount,
+      is_current: c.is_current
+    }));
+  return rows;
+}
 
 // ============ الإعلانات النشطة للتلميذ ============
 router.get('/announcements', async (req, res) => {
@@ -48,9 +71,7 @@ router.get('/me', async (req, res) => {
     ORDER BY t.last_name, t.first_name
   `).all(req.user.studentId);
 
-  const payments = await db.prepare(`
-    SELECT month_index, payment_date, is_paid FROM payments WHERE student_id = ?
-  `).all(req.user.studentId);
+  const payments = await studentCyclePayments(req.user.studentId);
 
   res.json({ student, selections, payments });
 });
@@ -143,8 +164,6 @@ router.get('/teachers/:id', async (req, res) => {
 });
 
 // ============ اختيار فوج (مع جميع القيود داخل معاملة) ============
-const MONTHS = ['سبتمبر', 'أكتوبر', 'نوفمبر', 'ديسمبر', 'جانفي', 'فيفري', 'مارس', 'أفريل', 'ماي'];
-
 router.post('/groups/:id/select', async (req, res) => {
   const studentId = req.user.studentId;
   const groupId = Number(req.params.id);
@@ -179,8 +198,9 @@ router.post('/groups/:id/select', async (req, res) => {
     const occ = await db.prepare('SELECT COUNT(*) AS c FROM student_group_selections WHERE group_id = ?').get(groupId);
     if (occ.c >= group.capacity) throw { status: 409, message: 'هذا الفوج مكتمل.' };
 
-    const insPay = db.prepare('INSERT OR IGNORE INTO payments (student_id, month_index, is_paid) VALUES (?, ?, 0)');
-    for (let i = 0; i < MONTHS.length; i++) await insPay.run(studentId, i);
+    // تسجيل الدفعات على مستوى الدورات (يُربط التلميذ بالدورة الحالية كغير مسدد)
+    const cycle = await cycles.ensureCycleRow(cycles.today());
+    if (cycle) await cycles.attachStudentToCycle(studentId, cycle.id);
 
     const result = await db.prepare(`
       INSERT INTO student_group_selections (student_id, group_id, teacher_id, status)
@@ -230,9 +250,7 @@ router.get('/account', async (req, res) => {
     ORDER BY t.last_name, t.first_name
   `).all(req.user.studentId);
 
-  const payments = await db.prepare(`
-    SELECT month_index, payment_date, is_paid FROM payments WHERE student_id = ? ORDER BY month_index
-  `).all(req.user.studentId);
+  const payments = await studentCyclePayments(req.user.studentId);
 
   res.json({ student, selections, payments });
 });

@@ -14,6 +14,8 @@ import AdminLevels from './pages/admin/Levels';
 import AdminSelections from './pages/admin/Selections';
 import AdminTeacherChoices from './pages/admin/TeacherChoices';
 import AdminPayments from './pages/admin/Payments';
+import AdminUnpaid from './pages/admin/Unpaid';
+import AdminPaymentHistory from './pages/admin/PaymentHistory';
 import AdminAnnouncements from './pages/admin/Announcements';
 import AdminSettings from './pages/admin/Settings';
 
@@ -60,6 +62,8 @@ function AppRoutes() {
         <Route path="selections" element={<AdminSelections />} />
         <Route path="teacher-choices" element={<AdminTeacherChoices />} />
         <Route path="payments" element={<AdminPayments />} />
+        <Route path="unpaid" element={<AdminUnpaid />} />
+        <Route path="payment-history" element={<AdminPaymentHistory />} />
         <Route path="announcements" element={<AdminAnnouncements />} />
         <Route path="settings" element={<AdminSettings />} />
       </Route>

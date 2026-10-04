@@ -294,6 +294,18 @@ tbody tr:hover { background: var(--primary-soft); }
 .info-item .k { color: var(--ink-3); font-size: 12px; font-weight: 700; }
 .info-item .v { font-weight: 800; font-size: 15px; margin-top: 2px; color: var(--ink); }
 
+/* قائمة الأشهر غير المدفوعة داخل نافذة السداد */
+.due-list { display: flex; flex-direction: column; gap: 8px; max-height: 260px; overflow: auto; padding: 2px; }
+.due-row {
+  display: flex; align-items: center; gap: 10px; cursor: pointer;
+  border: 1.5px solid var(--line); border-radius: 11px; padding: 10px 12px; background: #fff;
+  transition: border-color .15s, background .15s;
+}
+.due-row:hover { border-color: var(--primary); }
+.due-row.on { border-color: var(--primary); background: #eff6ff; }
+.due-row .due-name { font-weight: 800; }
+.due-row input[type="checkbox"] { width: 17px; height: 17px; accent-color: var(--primary); }
+
 /* =================== جداول الإدارة في شاشات صغيرة =================== */
 @media (max-width: 640px) {
   .stat-grid { grid-template-columns: repeat(2, 1fr); }
@@ -506,6 +518,19 @@ tbody tr:hover { background: var(--primary-soft); }
 .text-muted { color: var(--ink-3); }
 .small { font-size: 12.5px; }
 .mono { direction: ltr; display: inline-block; font-weight: 700; }
+
+.pager { display: flex; align-items: center; justify-content: center; gap: 12px; margin-top: 16px; flex-wrap: wrap; }
+.pager .btn[disabled] { opacity: .5; cursor: not-allowed; }
+
+/* =================== الأشهر غير المدفوعة =================== */
+.link-name { background: none; border: 0; padding: 0; font: inherit; font-weight: 800; color: var(--primary); cursor: pointer; text-decoration: underline dotted; text-underline-offset: 3px; }
+.link-name:hover { color: var(--primary-dark); }
+.unpaid-months { display: flex; flex-direction: column; gap: 5px; align-items: flex-start; }
+.unpaid-count { font-size: 11.5px; font-weight: 800; color: #b91c1c; background: var(--danger-light); border-radius: 99px; padding: 2px 9px; white-space: nowrap; }
+.month-tags { display: flex; flex-wrap: wrap; gap: 4px; }
+.month-tag { font-size: 11.5px; font-weight: 700; color: var(--ink-2); background: var(--surface-3); border: 1px solid var(--line); border-radius: 6px; padding: 2px 8px; white-space: nowrap; }
+.pay-cell { display: flex; flex-direction: column; gap: 3px; align-items: flex-start; }
+.pay-done { display: inline-flex; align-items: center; gap: 5px; padding: 5px 13px; border-radius: 8px; font-size: 12.5px; font-weight: 800; color: #15803d; background: var(--success-light); border: 1.5px solid #86efac; white-space: nowrap; }
 
 .pill-group { display: flex; flex-wrap: wrap; gap: 7px; }
 .pill { border: 1.5px solid var(--line); background: #fff; border-radius: 99px; padding: 6px 13px; font-size: 12.5px; font-weight: 700; color: var(--ink-2); cursor: pointer; transition: all .12s; user-select: none; }

@@ -145,3 +145,55 @@ CREATE TABLE IF NOT EXISTS announcements (
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT
 );
+
+-- Payment cycles: one row per monthly billing cycle (day 12 -> day 11)
+-- No fixed anchor date: any month produces its own cycle.
+-- anchor_date = start_date of the cycle itself and cycle_index = absolute month ordinal (year*12 + month - 1)
+CREATE TABLE IF NOT EXISTS payment_cycles (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  anchor_date TEXT NOT NULL,
+  start_date  TEXT NOT NULL UNIQUE,
+  end_date    TEXT NOT NULL,
+  label       TEXT NOT NULL,
+  cycle_index INTEGER NOT NULL,
+  created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_payment_cycles_end ON payment_cycles (end_date);
+CREATE INDEX IF NOT EXISTS idx_payment_cycles_idx ON payment_cycles (cycle_index);
+
+-- Payment records linked to a cycle instead of a fixed month_index
+CREATE TABLE IF NOT EXISTS cycle_payments (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  student_id INTEGER NOT NULL REFERENCES students(id) ON DELETE CASCADE,
+  cycle_id   INTEGER NOT NULL REFERENCES payment_cycles(id) ON DELETE CASCADE,
+  status     TEXT NOT NULL DEFAULT 'UNPAID' CHECK (status IN ('UNPAID', 'PAID')),
+  amount     REAL,
+  paid_at    TEXT,
+  created_by INTEGER REFERENCES users(id),
+  note       TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT,
+  UNIQUE (student_id, cycle_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_cycle_payments_cycle ON cycle_payments (cycle_id);
+CREATE INDEX IF NOT EXISTS idx_cycle_payments_student ON cycle_payments (student_id);
+CREATE INDEX IF NOT EXISTS idx_cycle_payments_status ON cycle_payments (cycle_id, status);
+
+-- Audit trail: keeps the full history even when a payment row is cancelled/edited
+CREATE TABLE IF NOT EXISTS payment_audit (
+  id                INTEGER PRIMARY KEY AUTOINCREMENT,
+  cycle_payments_id INTEGER,
+  cycle_id          INTEGER,
+  student_id        INTEGER NOT NULL,
+  action            TEXT NOT NULL,
+  from_status       TEXT,
+  to_status         TEXT,
+  amount            REAL,
+  user_id           INTEGER REFERENCES users(id),
+  created_at        TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_payment_audit_student ON payment_audit (student_id);
+CREATE INDEX IF NOT EXISTS idx_payment_audit_cycle ON payment_audit (cycle_id);

@@ -1,4 +1,4 @@
-const fs = require('fs');
+﻿const fs = require('fs');
 const path = require('path');
 const { Client, types } = require('pg');
 
@@ -12,7 +12,7 @@ let ready = false;
 // ========================= SQL Translation =========================
 
 // الجداول ذات عمود id أساسي (حتى يمكن إرفاق RETURNING id)
-const ID_TABLES = new Set(['users','academic_years','levels','classes','subjects','students','teachers','groups','student_group_selections','payments','schedules','announcements']);
+const ID_TABLES = new Set(['users','academic_years','levels','classes','subjects','students','teachers','groups','student_group_selections','payments','schedules','announcements','payment_cycles','cycle_payments','payment_audit']);
 
 function getInsertTable(sql) {
   const m = /^\s*INSERT\s+INTO\s+([A-Za-z_][A-Za-z0-9_]*)/.exec(sql);
@@ -50,13 +50,27 @@ async function getTableColumns(tableName) {
   const r = await client.query(`SELECT column_name FROM information_schema.columns WHERE table_name=$1 ORDER BY ordinal_position`, [tableName]);
   return r.rows.map(row => row.column_name);
 }
-
 // ========================= Query Executor =========================
+// اتصال واحد فقط ⇒ كل الاستعلامات تُسلسَل بالترتيب (وإلا تخلط pg بين النتائج)
+let chain = Promise.resolve();
+let txDepth = 0;
+
+function serialize(fn) {
+  // داخل معاملة: نفّذ مباشرة (المعاملة تحتجز السلسلة لنفسها)
+  if (txDepth > 0) return Promise.resolve().then(fn);
+  const p = chain.then(fn, fn);
+  chain = p.then(() => { }, () => { });
+  return p;
+}
+
 async function run(sql, ...params) {
-  if (sql.includes('?')) sql = translateSql(sql);
-  sql = ensureReturning(sql);
-  const r = await client.query(sql, params);
-  return { changes: r.rowCount || 0, lastInsertRowid: r.rows[0]?.id ?? null, rows: r.rows };
+  return serialize(async () => {
+    let s = sql;
+    if (s.includes('?')) s = translateSql(s);
+    s = ensureReturning(s);
+    const r = await client.query(s, params);
+    return { changes: r.rowCount || 0, lastInsertRowid: r.rows[0]?.id ?? null, rows: r.rows };
+  });
 }
 
 // ========================= DB Interface =========================
@@ -78,8 +92,9 @@ function prepare(sql) {
 }
 
 function transaction(fn) {
-  return async (...args) => {
+  return async (...args) => serialize(async () => {
     await client.query('BEGIN');
+    txDepth++;
     try {
       const result = await fn(...args);
       await client.query('COMMIT');
@@ -87,8 +102,10 @@ function transaction(fn) {
     } catch (err) {
       await client.query('ROLLBACK');
       throw err;
+    } finally {
+      txDepth--;
     }
-  };
+  });
 }
 
 // ========================= Seed =========================
@@ -129,7 +146,7 @@ async function getTablesWithIdColumn() {
 
 async function setSequences() {
   const withId = await getTablesWithIdColumn();
-  for (const tbl of ['users','academic_years','levels','classes','subjects','students','teachers','teacher_levels','teacher_classes','groups','student_group_selections','payments','schedules','announcements']) {
+  for (const tbl of ['users','academic_years','levels','classes','subjects','students','teachers','teacher_levels','teacher_classes','groups','student_group_selections','payments','schedules','announcements','payment_cycles','cycle_payments','payment_audit']) {
     if (!withId.has(tbl)) continue;
     const seq = (await client.query(`SELECT pg_get_serial_sequence($1, 'id') AS seq`, [tbl])).rows[0].seq;
     if (seq) await client.query(`SELECT setval($1, (SELECT COALESCE(MAX(id),1) FROM ${tbl}))`, [seq]);
@@ -148,4 +165,9 @@ async function init() {
   console.log('✅ PostgreSQL متصل ومتاح.');
 }
 
-module.exports = { prepare, transaction, init, setSequences, translateSql };
+async function close() {
+  try { await client.end(); } catch { /* already closed */ }
+  ready = false;
+}
+
+module.exports = { prepare, transaction, init, close, setSequences, translateSql, dialect: 'postgres' };

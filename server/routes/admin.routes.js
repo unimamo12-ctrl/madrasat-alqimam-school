@@ -6,9 +6,22 @@ const db = require('../db/database');
 const { authenticate, requireRole } = require('../middleware/auth');
 const { upload, UPLOAD_DIR, resolveUploads } = require('../middleware/upload');
 const cloud = require('../lib/cloudinary');
+const cycles = require('../services/paymentCycle.service');
 
 const router = express.Router();
 router.use(authenticate, requireRole('ROLE_ADMIN'));
+
+// Express 4 لا يلتقط رفضات async: بدون هذا الغلاف أي خطأ قاعدة بيانات يُسقط العملية كاملة
+const wrap = fn => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
+const numParam = value => {
+  const n = Number(value);
+  if (!Number.isInteger(n) || n <= 0) {
+    const err = new Error('معرّف غير صالح.');
+    err.status = 400;
+    throw err;
+  }
+  return n;
+};
 
 const MONTHS = ['سبتمبر', 'أكتوبر', 'نوفمبر', 'ديسمبر', 'جانفي', 'فيفري', 'مارس', 'أفريل', 'ماي'];
 const DAYS = ['السبت', 'الأحد', 'الاثنين', 'الثلاثاء', 'الأربعاء', 'الخميس', 'الجمعة'];
@@ -52,18 +65,23 @@ router.get('/stats', async (req, res) => {
     WHERE NOT EXISTS (SELECT 1 FROM student_group_selections sg WHERE sg.student_id = s.id)
   `).get()).c;
 
-  const studentsRod = (await db.prepare(`
-    SELECT COUNT(*) AS c FROM students s
-    WHERE (SELECT COUNT(*) FROM payments p WHERE p.student_id = s.id AND p.is_paid = 1) = 9
-  `).get()).c;
-  const totalStudents = stat.students;
-  const studentsNotPaid = totalStudents - studentsRod;
+  const activeStudents = (await db.prepare('SELECT COUNT(*) AS c FROM students WHERE status = 1').get()).c;
 
-  const monthlyChart = [];
-  for (let i = 0; i < MONTHS.length; i++) {
-    const row = await db.prepare('SELECT COUNT(*) AS c FROM payments WHERE month_index = ? AND is_paid = 1').get(i);
-    monthlyChart.push({ month: MONTHS[i], paid: row.c });
-  }
+  // الدورة الحالية على الخادم (تُنشأ وتُرمَّن عند الحاجة — لا cron)
+  const currentCycleRow = await cycles.getOrCreateCurrentCycle();
+  const currentStats = currentCycleRow ? await cycles.getCycleStats(currentCycleRow.id) : null;
+
+  // رسم بياني آخر 9 دورات (الدورات الحقيقية لا أرقاماً ثابتة)
+  const recentCycles = await cycles.listCycles();
+  const monthlyChart = recentCycles.slice(0, 9).reverse().map(c => ({
+    month: c.label,
+    cycle_id: c.id,
+    paid: c.paid,
+    unpaid: c.unpaid,
+    total: c.total,
+    collected: c.collected,
+    is_current: c.is_current
+  }));
 
   const levelChart = await db.prepare(`
     SELECT l.name, COUNT(s.id) AS count FROM levels l
@@ -78,10 +96,19 @@ router.get('/stats', async (req, res) => {
   `).all();
 
   res.json({
-    stats: { ...stat, studentsWithoutSelection, studentsRod, studentsNotPaid },
+    stats: {
+      ...stat,
+      studentsWithoutSelection,
+      activeStudents,
+      studentsRod: currentStats ? currentStats.paid : 0,
+      studentsNotPaid: currentStats ? currentStats.unpaid : 0,
+      collected: currentStats ? currentStats.collected : 0
+    },
+    currentCycle: currentStats,
     monthlyChart,
     levelChart,
-    groupCapacity
+    groupCapacity,
+    today: cycles.today()
   });
 });
 
@@ -133,7 +160,14 @@ async function createStudentRecord({ first_name, last_name, reg_number, phone, l
            class_id ? Number(class_id) : null, academic_year_id ? Number(academic_year_id) : null, status ? 1 : 0);
     return s.lastInsertRowid;
   });
-  try { return await tx(); } catch (e) { if (e.status) throw e; throw { status: 500, message: e.message }; }
+  let studentId;
+  try { studentId = await tx(); } catch (e) { if (e.status) throw e; throw { status: 500, message: e.message }; }
+  // تلميذ جديد = غير مسدد في الدورة الحالية
+  if (status) {
+    const cycle = await cycles.getOrCreateCurrentCycle();
+    if (cycle) await cycles.attachStudentToCycle(studentId, cycle.id);
+  }
+  return studentId;
 }
 
 router.post('/students', async (req, res) => {
@@ -608,99 +642,179 @@ router.get('/groups/:id/students', async (req, res) => {
   res.json({ students });
 });
 
-// ======================= الدفع =======================
-router.get('/payments', async (req, res) => {
-  const { q, level_id, class_id, paid_status } = req.query;
-  let sql = `
-    SELECT s.id AS student_id, s.first_name, s.last_name, s.reg_number,
-           l.name AS level_name, c.name AS class_name,
-           (SELECT COUNT(*) FROM payments p WHERE p.student_id=s.id AND p.is_paid=1) AS paid_months,
-           9 AS total_months
-    FROM students s
-    JOIN levels l ON l.id = s.level_id
-    LEFT JOIN classes c ON c.id = s.class_id
-    WHERE 1=1`;
-  const params = [];
-  if (q) { sql += ' AND (s.first_name LIKE ? OR s.last_name LIKE ? OR s.reg_number LIKE ?)'; const like = `%${q}%`; params.push(like, like, like); }
-  if (level_id) { sql += ' AND s.level_id=?'; params.push(Number(level_id)); }
-  if (class_id) { sql += ' AND s.class_id=?'; params.push(Number(class_id)); }
-  sql += ' ORDER BY s.last_name, s.first_name';
-  const students = await db.prepare(sql).all(...params);
+// ======================= الدورات والدفع =======================
+// كل العمليات محمية بـ router.use(authenticate, requireRole('ROLE_ADMIN'))
 
-  const filtered = students.filter(s => {
-    if (paid_status === 'paid') return s.paid_months === s.total_months;
-    if (paid_status === 'unpaid') return s.paid_months < s.total_months;
-    return true;
-  }).map(s => ({
-    ...s,
-    fully_paid: s.paid_months === s.total_months
-  }));
+// كل الدورات مع إحصاءاتها + الدورة الحالية
+router.get('/payment-cycles', wrap(async (req, res) => {
+  const current = await cycles.getOrCreateCurrentCycle();
+  const list = await cycles.listCycles();
+  res.json({ cycles: list, current: current ? list.find(c => c.id === current.id) || null : null, today: cycles.today() });
+}));
 
-  res.json({ students: filtered });
-});
+// الدورة الحالية (تُنشأ وتُرمَّن عند الحاجة — لا cron)
+router.get('/payment-cycles/current', wrap(async (req, res) => {
+  const cycle = await cycles.getOrCreateCurrentCycle();
+  if (!cycle) return res.json({ cycle: null, stats: null, today: cycles.today() });
+  const stats = await cycles.getCycleStats(cycle.id);
+  res.json({ cycle, stats, today: cycles.today() });
+}));
 
-router.get('/payments/student/:id', async (req, res) => {
-  const sid = Number(req.params.id);
-  const student = await db.prepare(`
-    SELECT s.id, s.first_name, s.last_name, s.reg_number, l.name AS level_name, c.name AS class_name
-    FROM students s JOIN levels l ON l.id=s.level_id LEFT JOIN classes c ON c.id=s.class_id
-    WHERE s.id=?
-  `).get(sid);
-  if (!student) return res.status(404).json({ message: 'التلميذ غير موجود.' });
-  const payments = await db.prepare('SELECT * FROM payments WHERE student_id=? ORDER BY month_index').all(sid);
-  const rows = MONTHS.map((m, i) => {
-    const p = payments.find(x => Number(x.month_index) === i);
-    const amount = p && p.note && !isNaN(Number(p.note)) && Number(p.note) > 0 ? Number(p.note) : null;
-    return { month: m, month_index: i, payment_date: p ? p.payment_date : null, amount, is_paid: p ? p.is_paid : 0, payment_id: p ? p.id : null };
+// تفاصيل دورة + إحصاؤها
+// الدورة التي يقع فيها تاريخ معيّن (القاعدة 12 ← 11) — تُنشأ عند الحاجة
+router.get('/payment-cycles/by-date', wrap(async (req, res) => {
+  const date = String(req.query.date || '').slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || Number.isNaN(new Date(date).getTime())) {
+    return res.status(400).json({ message: 'صيغة التاريخ غير صحيحة. المطلوب YYYY-MM-DD.' });
+  }
+  const cycle = await cycles.ensureCycleRow(date);
+  if (!cycle) {
+    const info = cycles.describeBlockedCycle(date);
+    const first = (await db.prepare('SELECT MIN(start_date) AS s FROM payment_cycles').get()).s;
+    return res.status(400).json({
+      message: info.reason || `لا توجد دورات قبل ${first} — التاريخ ${date} خارج سجل الدورات.`,
+      cycle: { label: info.range.label, start_date: info.range.start, end_date: info.range.end }
+    });
+  }
+  await cycles.ensureRoster(cycle.id);
+  const stats = await cycles.getCycleStats(cycle.id);
+  res.json({ cycle, stats, range: cycles.cycleRangeFor(date), today: cycles.today() });
+}));
+
+router.get('/payment-cycles/:id', wrap(async (req, res) => {
+  const stats = await cycles.getCycleStats(numParam(req.params.id));
+  if (!stats) return res.status(404).json({ message: 'الدورة غير موجودة.' });
+  res.json({ cycle: stats, stats, today: cycles.today() });
+}));
+
+// تلاميذ غير مسددي الدورة (Pagination + بحث + مستوى + شعبة)
+router.get('/payment-cycles/:id/unpaid', wrap(async (req, res) => {
+  const { q, level_id, class_id, page, per_page } = req.query;
+  const cycle = await cycles.getCycleById(numParam(req.params.id));
+  if (!cycle) return res.status(404).json({ message: 'الدورة غير موجودة.' });
+  const [list, stats] = await Promise.all([
+    cycles.getUnpaidStudents(cycle.id, { q, level_id, class_id, page, per_page }),
+    cycles.getCycleStats(cycle.id)
+  ]);
+  res.json({ ...list, cycle: stats, today: cycles.today() });
+}));
+
+// سجل كل الدفعات في دورة (Pagination + فلترة الحالة)
+router.get('/payment-cycles/:id/payments', wrap(async (req, res) => {
+  const { q, level_id, class_id, status, page, per_page } = req.query;
+  const cycle = await cycles.getCycleById(numParam(req.params.id));
+  if (!cycle) return res.status(404).json({ message: 'الدورة غير موجودة.' });
+  const [list, stats] = await Promise.all([
+    cycles.getCyclePayments(cycle.id, { q, level_id, class_id, status, page, per_page }),
+    cycles.getCycleStats(cycle.id)
+  ]);
+  res.json({ ...list, cycle: stats, today: cycles.today() });
+}));
+
+// تسجيل دفعة على دورة محددة (قد تكون دورة سابقة = دفع متأخر).
+// يمنع التكرار عبر UNIQUE(student_id, cycle_id) ويحدّث السجل نفسه بدل إنشاء صف ثانٍ.
+router.post('/payment-cycles/:id/payments', wrap(async (req, res) => {
+  const { student_id, amount, note, status, paid_at } = req.body;
+  if (!student_id) return res.status(400).json({ message: 'التلميذ مطلوب.' });
+  if (amount !== undefined && amount !== null && amount !== '' && (isNaN(Number(amount)) || Number(amount) < 0)) {
+    return res.status(400).json({ message: 'المبلغ غير صالح.' });
+  }
+  try {
+    const row = await cycles.recordPayment({
+      studentId: numParam(student_id),
+      cycleId: numParam(req.params.id),
+      amount,
+      status,
+      note,
+      paidAt: paid_at || undefined,
+      userId: req.user.id
+    });
+    const stats = await cycles.getCycleStats(numParam(req.params.id));
+    res.json({ message: status === 'UNPAID' ? 'تم تحديث السجل.' : 'تم تسجيل الدفع بنجاح.', payment: row, stats });
+  } catch (e) {
+    res.status(400).json({ message: e.message });
+  }
+}));
+
+// إلغاء دفعة (تغيير الحالة فقط — السجل وأثر التغيير محفوظان)
+router.post('/payment-cycles/:id/payments/:studentId/cancel', wrap(async (req, res) => {
+  try {
+    await cycles.cancelPayment({
+      studentId: numParam(req.params.studentId),
+      cycleId: numParam(req.params.id),
+      userId: req.user.id,
+      reason: req.body && req.body.reason
+    });
+    const stats = await cycles.getCycleStats(numParam(req.params.id));
+    res.json({ message: 'تم إلغاء الدفع.', stats });
+  } catch (e) {
+    res.status(400).json({ message: e.message });
+  }
+}));
+
+// ديون طالب واحد: كل الدورات غير المدفوعة (الأقدم ← الأحدث) + سجله الكامل
+router.get('/payment-cycles/student/:studentId/due', wrap(async (req, res) => {
+  const due = await cycles.getStudentDueCycles(numParam(req.params.studentId));
+  if (!due) return res.status(404).json({ message: 'التلميذ غير موجود.' });
+  res.json(due);
+}));
+
+// سداد عدة أشهر متأخرة في عملية واحدة (معاملة واحدة)
+router.post('/payment-cycles/payments/bulk', wrap(async (req, res) => {
+  const { student_id, items, paid_at } = req.body || {};
+  if (!student_id) return res.status(400).json({ message: 'التلميذ مطلوب.' });
+  try {
+    const rows = await cycles.recordPaymentsBulk({
+      studentId: numParam(student_id),
+      items,
+      paidAt: paid_at,
+      userId: req.user.id
+    });
+    const stats = await cycles.getCycleStats(rows[0].cycle_id);
+    res.json({ message: `تم تسجيل ${rows.length} دفعة بنجاح.`, payments: rows, stats });
+  } catch (e) {
+    res.status(400).json({ message: e.message });
+  }
+}));
+
+// سجل تلميذ كامل عبر كل الدورات + سجل التغييرات
+router.get('/students/:id/payment-history', wrap(async (req, res) => {
+  const history = await cycles.getStudentPaymentHistory(numParam(req.params.id));
+  if (!history) return res.status(404).json({ message: 'التلميذ غير موجود.' });
+  res.json(history);
+}));
+
+// سجل التغييرات (audit) لدورة
+router.get('/payment-cycles/:id/audit', wrap(async (req, res) => {
+  const cycle = await cycles.getCycleById(numParam(req.params.id));
+  if (!cycle) return res.status(404).json({ message: 'الدورة غير موجودة.' });
+  res.json({ audit: await cycles.getAuditTrail(cycle.id) });
+}));
+
+// قائمة تلاميذ الدورة مع حالة الدفع — المدير يتحكم بالفترة (من / إلى)
+//ترتيب رقم التسجيل — الكل يبقى ظاهراً (لا أحد يختفي)
+router.get('/unpaid', wrap(async (req, res) => {
+  const { q, level_id, class_id, page, per_page, from, to } = req.query;
+  const isD = v => /^\d{4}-\d{2}-\d{2}$/.test(String(v || '')) && !Number.isNaN(new Date(v).getTime());
+  // تاريخ البداية يحدّد دورة العرض؛ النهاية تحدّد نافذة «الأشهر التي لم دفعها»
+  const anchor = isD(from) ? String(from).slice(0, 10) : cycles.today();
+  const cycle = await cycles.ensureCycleRow(anchor);
+  await cycles.ensureRoster(cycle.id);
+  const list = await cycles.getUnpaidStudents(cycle.id, { q, level_id, class_id, page, per_page, from, to });
+  const stats = await cycles.getCycleStats(cycle.id);
+  res.json({
+    ...list,
+    cycle: stats,
+    window: { from, to: isD(to) ? String(to).slice(0, 10) : cycle.end_date },
+    today: cycles.today()
   });
-  res.json({ student, payments: rows });
-});
+}));
 
-// تسجيل/تعديل دفعة لشهر معين (تاريخ الدفع مدخل يدوياً في الأصل، الآن يُسجَّل «كم دفع التلميذ» لكل شهر في حقل note الموجود)
-router.post('/payments/student/:id', async (req, res) => {
-  const sid = Number(req.params.id);
-  const { month_index, amount } = req.body;
-  const rawMi = String(month_index ?? '').trim();
-  const mi = Number(rawMi);
-  if (rawMi === '' || isNaN(mi) || !Number.isInteger(mi) || mi < 0 || mi > 8) return res.status(400).json({ message: 'الشهر غير صحيح.' });
-  if (amount === undefined || amount === null || amount === '' || isNaN(Number(amount)) || Number(amount) <= 0) {
-    return res.status(400).json({ message: 'كم دفع التلميذ مطلوب (مبلغ صحيح أكبر من 0).' });
-  }
-  const amt = Math.round(Number(amount) * 100) / 100;
-  const student = await db.prepare('SELECT id FROM students WHERE id=?').get(sid);
-  if (!student) return res.status(404).json({ message: 'التلميذ غير موجود.' });
-  await db.prepare(`
-    INSERT INTO payments (student_id, month_index, note, is_paid, created_by, updated_at)
-    VALUES (?,?,?,1,?,datetime('now'))
-    ON CONFLICT(student_id, month_index) DO UPDATE SET
-      note=excluded.note, is_paid=1, updated_at=datetime('now')
-  `).run(sid, mi, String(amt), req.user.id);
-  res.json({ message: 'تم تسجيل الدفع بنجاح.' });
-});
-
-// تعديل دفعة موجودة
-router.put('/payments/:id', async (req, res) => {
-  const id = Number(req.params.id);
-  const { amount, is_paid } = req.body;
-  const p = await db.prepare('SELECT * FROM payments WHERE id=?').get(id);
-  if (!p) return res.status(404).json({ message: 'الدفعة غير موجودة.' });
-  let note = p.note || null;
-  if (amount !== undefined && amount !== null && amount !== '') {
-    if (isNaN(Number(amount)) || Number(amount) <= 0) return res.status(400).json({ message: 'كم دفع التلميذ يجب أن يكون مبلغاً صحيحاً أكبر من 0.' });
-    note = String(Math.round(Number(amount) * 100) / 100);
-  }
-  await db.prepare(`UPDATE payments SET note=?, is_paid=?, updated_at=datetime('now') WHERE id=?`)
-    .run(note, is_paid ? 1 : 0, id);
-  res.json({ message: is_paid ? 'تم تحديث الدفعة.' : 'تم إلغاء الدفعة.' });
-});
-
-// إلغاء دفع شهر
-router.delete('/payments/:id', async (req, res) => {
-  const id = Number(req.params.id);
-  const p = await db.prepare('SELECT * FROM payments WHERE id=?').get(id);
-  if (!p) return res.status(404).json({ message: 'الدفعة غير موجودة.' });
-  await db.prepare('UPDATE payments SET is_paid=0, note=NULL WHERE id=?').run(id);
-  res.json({ message: 'تم إلغاء الدفع.' });
+// أي خطأ في مسارات الدورات يُعاد كـJSON بدل إسقاط الخادم
+router.use((err, req, res, next) => {
+  const status = err.status || 500;
+  if (status >= 500) console.error('[admin/cycles]', err);
+  res.status(status).json({ message: status >= 500 ? 'حدث خطأ في الخادم، حاول مجدداً.' : err.message });
 });
 
 // ======================= الإعلانات =======================

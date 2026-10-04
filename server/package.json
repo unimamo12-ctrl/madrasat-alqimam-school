@@ -9,7 +9,9 @@
     "backup": "node scripts/backup-sqlite.js",
     "migrate:pg": "node scripts/migrate-sqlite-to-pg.js",
     "migrate:pg:dry": "node scripts/migrate-sqlite-to-pg.js --dry-run",
-    "pg:smoke": "node scripts/pg-smoke.js"
+    "pg:smoke": "node scripts/pg-smoke.js",
+    "test": "node --test --test-timeout=30000 tests/*.test.js",
+    "migrate:cycles": "node scripts/migrate-legacy-payments.js"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",

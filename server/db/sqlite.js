@@ -1,9 +1,12 @@
-const path = require('path');
+﻿const path = require('path');
 const fs = require('fs');
 const { DatabaseSync } = require('node:sqlite');
 const bcrypt = require('bcryptjs');
 
-const DB_PATH = path.join(__dirname, '..', 'data', 'school.db');
+// مسار ملف SQLite (يمكن تحويله للاختبارات عبر SQLITE_FILE)
+const DB_PATH = process.env.SQLITE_FILE
+  ? path.resolve(process.env.SQLITE_FILE)
+  : path.join(__dirname, '..', 'data', 'school.db');
 fs.mkdirSync(path.dirname(DB_PATH), { recursive: true });
 
 const sqlite = new DatabaseSync(DB_PATH);
@@ -78,4 +81,6 @@ function transaction(fn) {
 
 async function init() { /* already done at require time */ }
 
-module.exports = { prepare: stmt, transaction, init };
+async function close() { /* better-sqlite3 is synchronous: nothing to close */ }
+
+module.exports = { prepare: stmt, transaction, init, close, dialect: 'sqlite' };

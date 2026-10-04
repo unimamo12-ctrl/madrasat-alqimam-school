@@ -15,7 +15,7 @@ export default function Dashboard() {
   if (state.loading) return <Loading />;
   if (state.error) return <ErrorState message={state.error} onRetry={() => window.location.reload()} />;
 
-  const { stats, monthlyChart, levelChart, groupCapacity } = state.data;
+  const { stats, currentCycle, monthlyChart, levelChart, groupCapacity } = state.data;
   const maxMonthly = Math.max(...monthlyChart.map(m => m.paid), 1);
   const maxLevel = Math.max(...levelChart.map(l => l.count), 1);
 
@@ -25,8 +25,8 @@ export default function Dashboard() {
     { icon: '🗂️', color: '#fef3c7', num: stats.groups, label: 'عدد الأفواج' },
     { icon: '✅', color: '#dcfce7', num: stats.selections, label: 'عدد الاختيارات' },
     { icon: '⏳', color: '#fff7ed', num: stats.studentsWithoutSelection, label: 'تلاميذ لم يختاروا بعد' },
-    { icon: '💳', color: '#dcfce7', num: stats.studentsRod, label: 'تلاميذ مسددون' },
-    { icon: '⛔', color: '#fee2e2', num: stats.studentsNotPaid, label: 'تلاميذ غير مسددين' }
+    { icon: '💳', color: '#dcfce7', num: stats.studentsRod, label: 'سدّدوا الدورة الحالية' },
+    { icon: '⛔', color: '#fee2e2', num: stats.studentsNotPaid, label: 'لم يدفعوا الدورة الحالية' }
   ];
 
   return (
@@ -47,6 +47,43 @@ export default function Dashboard() {
           </div>
         ))}
       </div>
+
+      {currentCycle && (
+        <div className="chart-card mt-18">
+          <div className="flex between wrap" style={{ gap: 12 }}>
+            <div>
+              <h3 style={{ margin: 0 }}>الذين لم يدفعوا — {currentCycle.label}</h3>
+              <p className="small text-muted" style={{ margin: '6px 0 0' }}>
+                دورة الاستحقاق: {currentCycle.start_date} إلى {currentCycle.end_date}
+                {currentCycle.days_left > 0 && ` — باقي ${currentCycle.days_left} يوم`}
+              </p>
+            </div>
+            <div className="flex wrap" style={{ gap: 8 }}>
+              <Link to="/admin/unpaid" className="btn btn-primary btn-sm">قائمة غير المدفوعين ({stats.studentsNotPaid})</Link>
+              <Link to="/admin/payment-history" className="btn btn-ghost btn-sm">سجل الدورات</Link>
+            </div>
+          </div>
+
+          <div className="stat-grid mt-18">
+            <div className="stat-card">
+              <div className="stat-icon" style={{ background: '#fee2e2' }}>⛔</div>
+              <div><div className="num">{currentCycle.unpaid}</div><div className="lbl">لم يدفعوا هذه الدورة</div></div>
+            </div>
+            <div className="stat-card">
+              <div className="stat-icon" style={{ background: '#dcfce7' }}>✅</div>
+              <div><div className="num">{currentCycle.paid}</div><div className="lbl">سدّدوا هذه الدورة</div></div>
+            </div>
+            <div className="stat-card">
+              <div className="stat-icon" style={{ background: '#eff6ff' }}>💰</div>
+              <div><div className="num">{currentCycle.collected} دج</div><div className="lbl">المحصّل في الدورة</div></div>
+            </div>
+          </div>
+
+          {currentCycle.unpaid === 0
+            ? <p className="small text-muted mt-18">كل التلاميذ سدّدوا هذه الدورة. ✅</p>
+            : <p className="small text-muted mt-18">اضغط «قائمة غير المدفوعين» لعرض الأسماء مع البحث والتصفية وتسجيل الدفع مباشرة.</p>}
+        </div>
+      )}
 
       <div className="chart-row" style={{ display: 'grid' }}>
         <div className="chart-card">
@@ -69,6 +106,17 @@ export default function Dashboard() {
             </div>
           ))}
         </div>
+      </div>
+
+      <div className="chart-card mt-18">
+        <h3>الدفع الشهري (الدورات الحقيقية)</h3>
+        {monthlyChart.map(m => (
+          <div key={m.cycle_id || m.month} className="bar-row">
+            <span className="bar-label">{m.month}</span>
+            <div className="bar-track"><div className="bar-fill" style={{ width: `${(m.paid / (m.total || 1)) * 100}%` }} /></div>
+            <span className="bar-value">{m.paid}/{m.total}</span>
+          </div>
+        ))}
       </div>
 
       <div className="chart-card mt-18">
@@ -96,7 +144,8 @@ export default function Dashboard() {
       <div className="flex mt-24 wrap">
         <Link to="/admin/students" className="btn btn-primary">إدارة التلاميذ</Link>
         <Link to="/admin/teachers" className="btn btn-accent">إدارة الأساتذة والأفواج</Link>
-        <Link to="/admin/payments" className="btn btn-ghost">إدارة الدفع</Link>
+        <Link to="/admin/unpaid" className="btn btn-ghost">الذين لم يدفعوا</Link>
+        <Link to="/admin/payment-history" className="btn btn-ghost">سجل الدفعات</Link>
       </div>
     </div>
   );
